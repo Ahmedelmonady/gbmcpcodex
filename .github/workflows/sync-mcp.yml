@@ -1,0 +1,45 @@
+name: Notify MCP server to pull latest codex
+
+# Fires on every push to main and on manual dispatch. POSTs to the prod MCP server's
+# /admin/codex-sync endpoint so the running server pulls the new docs immediately.
+#
+# Required repository secrets:
+#   SYNC_URL_PROD  - Full URL of the prod sync endpoint, e.g. https://mcp.gameball.co/admin/codex-sync
+#   SYNC_KEY_PROD  - Sync key; must match CODEX_SYNC_KEY on the prod MCP server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST sync trigger to MCP server
+        env:
+          SYNC_URL: ${{ secrets.SYNC_URL_PROD }}
+          SYNC_KEY: ${{ secrets.SYNC_KEY_PROD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SYNC_URL:-}" ] || [ -z "${SYNC_KEY:-}" ]; then
+            echo "::error::SYNC_URL_PROD or SYNC_KEY_PROD secret is not set" >&2
+            exit 1
+          fi
+          BODY=$(jq -nc \
+            --arg event "push" \
+            --arg ref "${GITHUB_REF}" \
+            --arg sha "${GITHUB_SHA}" \
+            '{event:$event, ref:$ref, sha:$sha}')
+          STATUS=$(curl -sS -o /tmp/sync_response.txt -w '%{http_code}' \
+            -X POST "$SYNC_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-GB-Sync-Key: $SYNC_KEY" \
+            --data "$BODY")
+          echo "MCP server responded $STATUS"
+          cat /tmp/sync_response.txt || true
+          # Server returns 202 on success; treat anything else as failure
+          if [ "$STATUS" != "202" ]; then
+            echo "::error::Expected 202, got $STATUS" >&2
+            exit 1
+          fi
