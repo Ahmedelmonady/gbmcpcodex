@@ -1,29 +1,58 @@
 name: Notify MCP server to pull latest codex
 
-# Fires on every push to main and on manual dispatch. POSTs to the prod MCP server's
-# /admin/codex-sync endpoint so the running server pulls the new docs immediately.
+# Fires on every push to a tracked branch and on manual dispatch. POSTs to the
+# matching environment's MCP server /admin/codex-sync endpoint so it pulls the
+# new docs immediately.
 #
-# Required repository secrets:
-#   SYNC_URL_PROD  - Full URL of the prod sync endpoint, e.g. https://mcp.gameball.co/admin/codex-sync
-#   SYNC_KEY_PROD  - Sync key; must match CODEX_SYNC_KEY on the prod MCP server
+# Each tracked branch maps to one MCP server. Branches that aren't listed in
+# `on.push.branches` won't trigger this workflow at all.
+#
+# Required repository secrets (per environment):
+#   SYNC_URL_PROD     - Prod MCP sync endpoint     (used for main)
+#   SYNC_URL_ALPHA    - Alpha MCP sync endpoint
+#   SYNC_URL_PIRATES  - Pirates MCP sync endpoint
+#   SYNC_URL_SIGMA    - Sigma MCP sync endpoint
+#   SYNC_URL_STAGING  - Staging MCP sync endpoint
+#   SYNC_KEY_PROD     - Prod sync key              (matches CODEX_SYNC_KEY on prod server)
+#   SYNC_KEY_ALPHA    - Alpha sync key             (matches CODEX_SYNC_KEY on alpha server)
+#   SYNC_KEY_PIRATES  - Pirates sync key
+#   SYNC_KEY_SIGMA    - Sigma sync key
+#   SYNC_KEY_STAGING  - Staging sync key
 
 on:
   push:
-    branches: [main]
+    branches: [main, alpha, pirates, sigma, staging]
   workflow_dispatch:
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: POST sync trigger to MCP server
+      - name: POST sync trigger to matching MCP server
         env:
-          SYNC_URL: ${{ secrets.SYNC_URL_PROD }}
-          SYNC_KEY: ${{ secrets.SYNC_KEY_PROD }}
+          BRANCH: ${{ github.ref_name }}
+          URL_PROD:    ${{ secrets.SYNC_URL_PROD }}
+          URL_ALPHA:   ${{ secrets.SYNC_URL_ALPHA }}
+          URL_PIRATES: ${{ secrets.SYNC_URL_PIRATES }}
+          URL_SIGMA:   ${{ secrets.SYNC_URL_SIGMA }}
+          URL_STAGING: ${{ secrets.SYNC_URL_STAGING }}
+          KEY_PROD:    ${{ secrets.SYNC_KEY_PROD }}
+          KEY_ALPHA:   ${{ secrets.SYNC_KEY_ALPHA }}
+          KEY_PIRATES: ${{ secrets.SYNC_KEY_PIRATES }}
+          KEY_SIGMA:   ${{ secrets.SYNC_KEY_SIGMA }}
+          KEY_STAGING: ${{ secrets.SYNC_KEY_STAGING }}
         run: |
           set -euo pipefail
+          case "$BRANCH" in
+            main)    SYNC_URL="$URL_PROD";    SYNC_KEY="$KEY_PROD";;
+            alpha)   SYNC_URL="$URL_ALPHA";   SYNC_KEY="$KEY_ALPHA";;
+            pirates) SYNC_URL="$URL_PIRATES"; SYNC_KEY="$KEY_PIRATES";;
+            sigma)   SYNC_URL="$URL_SIGMA";   SYNC_KEY="$KEY_SIGMA";;
+            staging) SYNC_URL="$URL_STAGING"; SYNC_KEY="$KEY_STAGING";;
+            *) echo "::error::Unknown branch '$BRANCH' — no MCP target configured" >&2; exit 1;;
+          esac
           if [ -z "${SYNC_URL:-}" ] || [ -z "${SYNC_KEY:-}" ]; then
-            echo "::error::SYNC_URL_PROD or SYNC_KEY_PROD secret is not set" >&2
+            echo "::error::Sync URL or key for branch '$BRANCH' is not set in repo secrets" >&2
             exit 1
           fi
           BODY=$(jq -nc \
@@ -36,10 +65,9 @@ jobs:
             -H "Content-Type: application/json" \
             -H "X-GB-Sync-Key: $SYNC_KEY" \
             --data "$BODY")
-          echo "MCP server responded $STATUS"
+          echo "MCP server (branch=$BRANCH) responded $STATUS"
           cat /tmp/sync_response.txt || true
-          # Server returns 202 on success; treat anything else as failure
           if [ "$STATUS" != "202" ]; then
-            echo "::error::Expected 202, got $STATUS" >&2
+            echo "::error::Expected 202 from $BRANCH MCP, got $STATUS" >&2
             exit 1
           fi
